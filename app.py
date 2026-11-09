@@ -7,44 +7,45 @@ from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Kronos Bitcoin Forecasting Engine")
 
-# --- KRONOS PROGNOSE ENGINE (100 PFADE MIT WAHRSCHEINLICHKEITEN) ---
+# --- KRONOS PROGNOSE ENGINE (100 PFADE BIS ZU 12 WOCHEN) ---
 def run_kronos_simulation(current_price: float, num_paths: int = 100):
     np.random.seed(int(time.time()) % 10000)
     mu = 0.0002
     sigma = 0.015
     
-    steps_24h, steps_48h, steps_7d = 24, 48, 168
-    final_24h, final_48h, final_7d = [], [], []
+    # Zeitschritte in Stunden (bis zu 12 Wochen = 2016 Std)
+    steps_map = {
+        "24h": 24,
+        "48h": 48,
+        "1w": 168,
+        "2w": 336,
+        "4w": 672,
+        "8w": 1344,
+        "12w": 2016
+    }
+    max_steps = 2016
+    
+    results = {k: [] for k in steps_map.keys()}
 
     for _ in range(num_paths):
         price = current_price
-        for t in range(1, steps_7d + 1):
+        for t in range(1, max_steps + 1):
             shock = np.random.normal(0, 1)
             price = price * math.exp((mu - 0.5 * sigma**2) + sigma * shock)
-            if t == steps_24h:
-                final_24h.append(price)
-            elif t == steps_48h:
-                final_48h.append(price)
-            elif t == steps_7d:
-                final_7d.append(price)
+            for k, step_t in steps_map.items():
+                if t == step_t:
+                    results[k].append(price)
 
-    arr_24h = np.array(final_24h)
-    arr_48h = np.array(final_48h)
-    arr_7d = np.array(final_7d)
+    output = {}
+    for k, prices in results.items():
+        arr = np.array(prices)
+        output[k] = {
+            "low": float(np.percentile(arr, 5)),
+            "high": float(np.percentile(arr, 95)),
+            "up_prob": int(np.sum(arr > current_price))
+        }
 
-    return {
-        "p24_low": float(np.percentile(arr_24h, 5)),
-        "p24_high": float(np.percentile(arr_24h, 95)),
-        "p24_up_prob": int(np.sum(arr_24h > current_price)),
-        
-        "p48_low": float(np.percentile(arr_48h, 5)),
-        "p48_high": float(np.percentile(arr_48h, 95)),
-        "p48_up_prob": int(np.sum(arr_48h > current_price)),
-        
-        "p7d_low": float(np.percentile(arr_7d, 5)),
-        "p7d_high": float(np.percentile(arr_7d, 95)),
-        "p7d_up_prob": int(np.sum(arr_7d > current_price)),
-    }
+    return output
 
 # --- ECHTZEIT BTC-PREIS (BINANCE MIT FALLBACK) ---
 def get_live_btc_eur():
@@ -121,7 +122,7 @@ async def get_dashboard():
     </div>
 
     <div class="card">
-        <h1>🔮 KRONOS PROGNOSE (100 Pfade)</h1>
+        <h1>🔮 KRONOS PROGNOSE (100 Pfade bis 12 Wochen)</h1>
         <table>
             <thead>
                 <tr>
@@ -137,6 +138,16 @@ async def get_dashboard():
     </div>
 
     <script>
+        const labels = {
+            "24h": "24 Std",
+            "48h": "48 Std",
+            "1w": "1 Woche",
+            "2w": "2 Wochen",
+            "4w": "4 Wochen",
+            "8w": "8 Wochen",
+            "12w": "12 Wochen"
+        };
+
         async function fetchDashboardData() {
             try {
                 const res = await fetch('/api/data');
@@ -147,23 +158,21 @@ async def get_dashboard():
                 document.getElementById('low-24h').innerText = data.market.low_24h.toLocaleString('de-DE', {style: 'currency', currency: 'EUR'});
                 
                 const k = data.kronos;
-                document.getElementById('kronos-table').innerHTML = `
-                    <tr>
-                        <td><strong>24 Std</strong></td>
-                        <td>${k.p24_low.toFixed(0)} € – ${k.p24_high.toFixed(0)} €</td>
-                        <td><span class="badge-up">🟢 ${k.p24_up_prob}%</span></td>
-                    </tr>
-                    <tr>
-                        <td><strong>48 Std</strong></td>
-                        <td>${k.p48_low.toFixed(0)} € – ${k.p48_high.toFixed(0)} €</td>
-                        <td><span class="badge-up">🟢 ${k.p48_up_prob}%</span></td>
-                    </tr>
-                    <tr>
-                        <td><strong>1 Woche</strong></td>
-                        <td>${k.p7d_low.toFixed(0)} € – ${k.p7d_high.toFixed(0)} €</td>
-                        <td><span class="badge-up">🟢 ${k.p7d_up_prob}%</span></td>
-                    </tr>
-                `;
+                let rowsHtml = '';
+                
+                for (const [key, label] of Object.entries(labels)) {
+                    if (k[key]) {
+                        rowsHtml += `
+                            <tr>
+                                <td><strong>${label}</strong></td>
+                                <td>${k[key].low.toFixed(0)} € – ${k[key].high.toFixed(0)} €</td>
+                                <td><span class="badge-up">🟢 ${k[key].up_prob}%</span></td>
+                            </tr>
+                        `;
+                    }
+                }
+                
+                document.getElementById('kronos-table').innerHTML = rowsHtml;
             } catch (err) {
                 console.error("Fehler beim Abrufen der Daten:", err);
             }
