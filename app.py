@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Kronos Bitcoin Forecasting Engine")
 
-# --- KRONOS PROGNOSE ENGINE (100 PFADE) ---
+# --- KRONOS PROGNOSE ENGINE (100 PFADE MIT WAHRSCHEINLICHKEITEN) ---
 def run_kronos_simulation(current_price: float, num_paths: int = 100):
     np.random.seed(int(time.time()) % 10000)
     mu = 0.0002
@@ -28,13 +28,22 @@ def run_kronos_simulation(current_price: float, num_paths: int = 100):
             elif t == steps_7d:
                 final_7d.append(price)
 
+    arr_24h = np.array(final_24h)
+    arr_48h = np.array(final_48h)
+    arr_7d = np.array(final_7d)
+
     return {
-        "p24_low": float(np.percentile(final_24h, 5)),
-        "p24_high": float(np.percentile(final_24h, 95)),
-        "p48_low": float(np.percentile(final_48h, 5)),
-        "p48_high": float(np.percentile(final_48h, 95)),
-        "p7d_low": float(np.percentile(final_7d, 5)),
-        "p7d_high": float(np.percentile(final_7d, 95)),
+        "p24_low": float(np.percentile(arr_24h, 5)),
+        "p24_high": float(np.percentile(arr_24h, 95)),
+        "p24_up_prob": int(np.sum(arr_24h > current_price)),
+        
+        "p48_low": float(np.percentile(arr_48h, 5)),
+        "p48_high": float(np.percentile(arr_48h, 95)),
+        "p48_up_prob": int(np.sum(arr_48h > current_price)),
+        
+        "p7d_low": float(np.percentile(arr_7d, 5)),
+        "p7d_high": float(np.percentile(arr_7d, 95)),
+        "p7d_up_prob": int(np.sum(arr_7d > current_price)),
     }
 
 # --- ECHTZEIT BTC-PREIS (BINANCE MIT FALLBACK) ---
@@ -70,7 +79,7 @@ def get_dashboard_data():
         "kronos": kronos_sim
     }
 
-# --- DASHBOARD HTML & HTTP FETCH LOGIK ---
+# --- DASHBOARD HTML ---
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard():
     return """
@@ -92,6 +101,7 @@ async def get_dashboard():
         table { width: 100%; border-collapse: collapse; margin-top: 8px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.85rem; }
         th { color: #94a3b8; }
+        .badge-up { background: #065f46; color: #34d399; padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 0.8rem; }
     </style>
 </head>
 <body>
@@ -111,16 +121,17 @@ async def get_dashboard():
     </div>
 
     <div class="card">
-        <h1>🔮 KRONOS PROGNOSE (100 Zukunftsverläufe)</h1>
+        <h1>🔮 KRONOS PROGNOSE (100 Pfade)</h1>
         <table>
             <thead>
                 <tr>
                     <th>Zeitraum</th>
-                    <th>Erwarteter Korridor (EUR)</th>
+                    <th>90% Korridor (EUR)</th>
+                    <th>Chance auf Anstieg</th>
                 </tr>
             </thead>
             <tbody id="kronos-table">
-                <tr><td colspan="2">Berechne 100 Pfade...</td></tr>
+                <tr><td colspan="3">Berechne Wahrscheinlichkeiten...</td></tr>
             </tbody>
         </table>
     </div>
@@ -137,9 +148,21 @@ async def get_dashboard():
                 
                 const k = data.kronos;
                 document.getElementById('kronos-table').innerHTML = `
-                    <tr><td><strong>24 Stunden</strong></td><td>${k.p24_low.toFixed(0)} € – ${k.p24_high.toFixed(0)} €</td></tr>
-                    <tr><td><strong>48 Stunden</strong></td><td>${k.p48_low.toFixed(0)} € – ${k.p48_high.toFixed(0)} €</td></tr>
-                    <tr><td><strong>1 Woche</strong></td><td>${k.p7d_low.toFixed(0)} € – ${k.p7d_high.toFixed(0)} €</td></tr>
+                    <tr>
+                        <td><strong>24 Std</strong></td>
+                        <td>${k.p24_low.toFixed(0)} € – ${k.p24_high.toFixed(0)} €</td>
+                        <td><span class="badge-up">🟢 ${k.p24_up_prob}%</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>48 Std</strong></td>
+                        <td>${k.p48_low.toFixed(0)} € – ${k.p48_high.toFixed(0)} €</td>
+                        <td><span class="badge-up">🟢 ${k.p48_up_prob}%</span></td>
+                    </tr>
+                    <tr>
+                        <td><strong>1 Woche</strong></td>
+                        <td>${k.p7d_low.toFixed(0)} € – ${k.p7d_high.toFixed(0)} €</td>
+                        <td><span class="badge-up">🟢 ${k.p7d_up_prob}%</span></td>
+                    </tr>
                 `;
             } catch (err) {
                 console.error("Fehler beim Abrufen der Daten:", err);
