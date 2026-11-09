@@ -1,9 +1,8 @@
-import asyncio
 import math
 import time
 import numpy as np
 import requests
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="Kronos Bitcoin Forecasting Engine")
@@ -38,20 +37,40 @@ def run_kronos_simulation(current_price: float, num_paths: int = 100):
         "p7d_high": float(np.percentile(final_7d, 95)),
     }
 
-# --- ECHTZEIT BTC-PREIS (BINANCE API - STABIL ON RENDER) ---
+# --- ECHTZEIT BTC-PREIS (BINANCE MIT FALLBACK) ---
 def get_live_btc_eur():
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCEUR"
-        res = requests.get(url, timeout=5).json()
+        res = requests.get(url, headers=headers, timeout=4).json()
         return {
             "price": float(res["lastPrice"]),
             "high_24h": float(res["highPrice"]),
             "low_24h": float(res["lowPrice"])
         }
     except Exception:
-        return {"price": 66159.0, "high_24h": 67656.0, "low_24h": 65918.0}
+        try:
+            url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur&include_24hr_high=true&include_24hr_low=true"
+            res = requests.get(url, headers=headers, timeout=4).json()["bitcoin"]
+            return {
+                "price": float(res["eur"]),
+                "high_24h": float(res["eur_24h_high"]),
+                "low_24h": float(res["eur_24h_low"])
+            }
+        except Exception:
+            return {"price": 66159.0, "high_24h": 67656.0, "low_24h": 65918.0}
 
-# --- DASHBOARD HTML & RECONNECT LOGIK ---
+# --- REST API ENDPUNKT ---
+@app.get("/api/data")
+def get_dashboard_data():
+    market_data = get_live_btc_eur()
+    kronos_sim = run_kronos_simulation(market_data["price"], num_paths=100)
+    return {
+        "market": market_data,
+        "kronos": kronos_sim
+    }
+
+# --- DASHBOARD HTML & HTTP FETCH LOGIK ---
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard():
     return """
@@ -78,7 +97,7 @@ async def get_dashboard():
 <body>
     <div class="card">
         <h1>⚡ BTC ECHTZEITBÖRSE</h1>
-        <div id="live-price" class="price-huge">Verbinde...</div>
+        <div id="live-price" class="price-huge">Lade Daten...</div>
         <div class="grid">
             <div class="stat-box">
                 <div class="stat-title">24h Hoch</div>
@@ -107,12 +126,11 @@ async def get_dashboard():
     </div>
 
     <script>
-        function connect() {
-            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-            
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+        async function fetchDashboardData() {
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
+                
                 document.getElementById('live-price').innerText = data.market.price.toLocaleString('de-DE', {style: 'currency', currency: 'EUR'});
                 document.getElementById('high-24h').innerText = data.market.high_24h.toLocaleString('de-DE', {style: 'currency', currency: 'EUR'});
                 document.getElementById('low-24h').innerText = data.market.low_24h.toLocaleString('de-DE', {style: 'currency', currency: 'EUR'});
@@ -123,32 +141,14 @@ async def get_dashboard():
                     <tr><td><strong>48 Stunden</strong></td><td>${k.p48_low.toFixed(0)} € – ${k.p48_high.toFixed(0)} €</td></tr>
                     <tr><td><strong>1 Woche</strong></td><td>${k.p7d_low.toFixed(0)} € – ${k.p7d_high.toFixed(0)} €</td></tr>
                 `;
-            };
-
-            ws.onclose = () => {
-                setTimeout(connect, 2000);
-            };
+            } catch (err) {
+                console.error("Fehler beim Abrufen der Daten:", err);
+            }
         }
-        connect();
+
+        fetchDashboardData();
+        setInterval(fetchDashboardData, 3000);
     </script>
 </body>
 </html>
     """
-
-# --- WEBSOCKET ENGINE ---
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            market_data = get_live_btc_eur()
-            kronos_sim = run_kronos_simulation(market_data["price"], num_paths=100)
-            payload = {
-                "market": market_data,
-                "kronos": kronos_sim
-            }
-            await websocket.send_json(payload)
-            await asyncio.sleep(5)
-    except Exception:
-        pass
-        
